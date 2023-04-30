@@ -10,51 +10,18 @@
 #include <signal.h>
 #include <strings.h>
 #include <sys/stat.h>
-# include <bits/sigaction.h>
+#include <bits/sigaction.h>
 
 #define COMMAND_LEN 1024
 #define ARG_LEN 64
 #define	STDIN	0
 #define	STDOUT	1
+void parse_command(char* command, char** args, int* args_num, int* input_fd, int* output_fd);
+void executeCommand(char** args, int fd_in, int fd_out);
+void handle_signal(int sig);
 
 volatile sig_atomic_t isRunning = 1;
-struct sigaction sa;
-
-void handle_signal(int sig) {
-    if (sig == SIGINT) {
-        //closing proccess
-        printf("\n");
-        isRunning = 0;
-    }
-}
-
-void runCommand(char** args, int fd_in, int fd_out) {
-    pid_t pid = fork();
-
-    if (pid == 0) {//child process
-        if (fd_in != STDIN) {
-            dup2(fd_in, STDIN);
-            close(fd_in);
-        }
-
-        if (fd_out != STDOUT) {
-            dup2(fd_out, STDOUT);
-            close(fd_out);
-        }
-        execvp(args[0], args);
-        exit(EXIT_FAILURE);
-    }
-    else if (pid < 0) {
-        perror("Fork Error");
-    }
-    else {
-        int status;
-        do {
-            waitpid(pid, &status, 0);
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status));
-    }
-}
-
+struct sigaction siga;
 /*
 O_APPEND
               The file is opened in append mode.  Before  each  write(2),  the
@@ -101,71 +68,122 @@ O_TRUNC
               file, the O_TRUNC flag is ignored.   Otherwise,  the  effect  of
               O_TRUNC is unspecified.
 */
-void parse_command(char* command, char** args, int* num_args, int* input_fd, int* output_fd) {
-    char* token = strtok(command, " ");
-    while (token != NULL) {
-        if (strcmp(token, "<") == 0) {
-            token = strtok(NULL, " ");
-            *input_fd = open(token, O_RDONLY);
-            if (*input_fd < 0) {
-                perror("open");
-                return;
-            }
-        }
-        else if (strcmp(token, ">") == 0) {
-            token = strtok(NULL, " ");
-            *output_fd = open(token, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
-            if (*output_fd < 0) {
-                perror("open");
-                return;
-            }
-        }
-        else if (strcmp(token, ">>") == 0) {
-            token = strtok(NULL, " ");
-            *output_fd = open(token, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
-            if (*output_fd < 0) {
-                perror("open");
-                return;
-            }
-        }
-        else if (strcmp(token, "|") == 0) {
-            int pipe_fds[2];
-            pipe(pipe_fds);
-            runCommand(args, *input_fd, pipe_fds[1]);
-            close(pipe_fds[1]);
-            *num_args = 0;
-            *input_fd = pipe_fds[0];
-        }
-        else {
-            args[*num_args] = token;
-            (*num_args)++;
-        }
 
+void parse_command(char* command, char** args, int* args_num, int* input_fd, int* output_fd) {
+    char *token = strtok(command, " ");
+
+    while (token != NULL) {
+        switch(token[0]) {
+            case '<': // Input redirection
+                token = strtok(NULL, " ");
+                *input_fd = open(token, O_RDONLY);
+                if (*input_fd < 0) {
+                    perror("open");
+                    return;
+                }
+                break;
+
+            case '>': // Output redirection
+                if (token[1] == '>') { // Append to file
+                    token = strtok(NULL, " ");
+                    *output_fd = open(token, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
+                    if (*output_fd < 0) {
+                        perror("open");
+                        return;
+                    }
+                } else { // Overwrite file
+                    token = strtok(NULL, " ");
+                    *output_fd = open(token, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
+                    if (*output_fd < 0) {
+                        perror("open");
+                        return;
+                    }
+                }
+                break;
+
+            case '|': // Pipe
+            {
+                int pipe_fds[2];
+                pipe(pipe_fds);
+                executeCommand(args, *input_fd, pipe_fds[1]);
+                close(pipe_fds[1]);
+                *args_num = 0;
+                *input_fd = pipe_fds[0];
+                break;
+            }
+
+            default: // Command argument
+                args[*args_num] = token;
+                (*args_num)++;
+                break;
+        }
         token = strtok(NULL, " ");
     }
-    args[*num_args] = NULL;
+    args[*args_num] = NULL; // Mark end of arguments
+}
+
+/* Executes the command specified in the `args` array, using the file descriptors
+   `fd_in` and `fd_out` for input and output redirection */
+void executeCommand(char** args, int fd_in, int fd_out) {
+    pid_t pid = fork();  // Fork a new process
+
+    if (pid == 0) {  // Child process
+        if (fd_in != STDIN) {  // Redirect input if necessary
+            dup2(fd_in, STDIN);  // Duplicate `fd_in` to `STDIN`
+            close(fd_in);  // Close the original `fd_in`
+        }
+
+        if (fd_out != STDOUT) {  // Redirect output if necessary
+            dup2(fd_out, STDOUT);  // Duplicate `fd_out` to `STDOUT`
+            close(fd_out);  // Close the original `fd_out`
+        }
+
+        execvp(args[0], args);  // Execute the command
+        exit(EXIT_FAILURE);  // Exit the child process with a failure status
+    }
+    else if (pid < 0) {  // Error
+        perror("Fork Error");  // Print an error message
+    }
+    else {  // Parent process
+        int status;
+        do {
+            waitpid(pid, &status, 0);  // Wait for the child process to terminate
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status));  // Continue waiting if the child process was not terminated normally or due to a signal
+    }
+}
+
+void handle_signal(int sig) {
+    if (sig == SIGINT) {
+        //closing proccess
+        printf("\n");
+        isRunning = 0;
+    }
 }
 
 int main() {
-    bzero(&sa, sizeof(sa));
-    sa.sa_handler = handle_signal;
-    sigaction(SIGINT, &sa, NULL);
+    //allocation
+    bzero(&siga, sizeof(siga));
+    //handling the signal when arrived
+    siga.sa_handler = handle_signal;
+    sigaction(SIGINT, &siga, NULL);
     char command[COMMAND_LEN];
     char* args[ARG_LEN];
-    int num_args = 0;
+    int args_num = 0;
     int fd_in, fd_out;
 
-    while (isRunning) {
-        num_args = 0;
+    do {
+        args_num = 0;
         fd_in = STDIN;
         fd_out = STDOUT;
-        printf("stshell> ");
+        printf("stshell: ");
         fgets(command, COMMAND_LEN, stdin);
         command[strcspn(command, "\n")] = '\0';
-        parse_command(command, args, &num_args, &fd_in, &fd_out);
-        if(!isRunning)num_args = 0;
-        if (num_args > 0) {
-            runCommand(args, fd_in, fd_out);
+        parse_command(command, args, &args_num, &fd_in, &fd_out);
+        if (!isRunning) {
+            args_num = 0;
+        }
+        if (args_num > 0) {
+            executeCommand(args, fd_in, fd_out);
         }
 
         if (fd_in != STDIN) {
@@ -175,6 +193,6 @@ int main() {
         if (fd_out != STDOUT) {
             close(fd_out);
         }
-    }
+    } while (isRunning);
     return 0;
 }
