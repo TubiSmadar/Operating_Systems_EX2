@@ -14,7 +14,7 @@
 
 #define COMMAND_LEN 1024
 #define ARG_LEN 64
-#define	STDIN	0
+#define	STDIN 0
 #define	STDOUT	1
 void parse_command(char* command, char** args, int* args_num, int* input_fd, int* output_fd);
 void executeCommand(char** args, int fd_in, int fd_out);
