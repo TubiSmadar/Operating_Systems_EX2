@@ -1,0 +1,21 @@
+OS ASSIGNMENT 2
+
+In this assignment we worked on three parts, while each part contains different programs:
+Part I : 
+1. cmp tool - the tool compare two files, and return “0” if they are equal, and “1” if not. Implementing the shell cmp command, support -v flag for verbose output(print "equal" or "distinct" in addition to "0"/"1") and support -i flag, that mean “ignore case”(uppercase and lower case are equal)
+The usage: cmp <file1> <file2> and than in option [-v]/[-I]
+
+2. copy tool - the tool copy a file to another place and/or name and will return an integer value of 0 on success and 1 on failure. Implementing the shell copy command, support the -v flag(output "success" if the file is copied, "target file exist" if the file already exists, or "general failure" on some other problem in addition to "0"/"1"). This tool also support the -f flag, which allows the target file to be overwritten.
+The usage: copy <file1> <file2>  and than in option [-v]/[-f]
+
+Part II :
+1. codecA encode/decode - by "encode" tool it covert all lower case chars to upper case, and all upper case to lower case. All other chars will remain unchanged. Than by the tool "decode" he will
+get the original string
+2. codecB encode/decode - by "encode" tool it convert all chars to the 3-rd next char by adding a number of 3 to the ascii val. Than by the tool "decode" he will get the original string
+
+Part III :
+stshell tool - shell program named stshell, that implements every shell command. Run CMD tools by fork, exec and with. the program able to stop running but not killing the shell. supporting '>', '>>' and at least two '|' and be able to stop the shell by "exit" command.
+
+tal tosiano.  Tuvia Smadar
+208846600
+315368577
