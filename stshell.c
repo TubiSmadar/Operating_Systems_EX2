@@ -14,15 +14,17 @@
 
 #define COMMAND_LEN 1024
 #define ARG_LEN 64
-#define STDIN 0
-#define STDOUT 1
+#define	STDIN	0
+#define	STDOUT	1
 void parse_command(char* command, char** args, int* args_num, int* input_fd, int* output_fd);
 void executeCommand(char** args, int fd_in, int fd_out);
 void handle_signal(int sig);
+int my_dup2(int oldfd, int newfd);
 
 volatile sig_atomic_t isRunning = 1;
 struct sigaction siga;
 /*
+Important notes to understand what's going on this function.
 O_APPEND
               The file is opened in append mode.  Before  each  write(2),  the
               file  offset  is  positioned  at the end of the file, as if with
@@ -68,6 +70,46 @@ O_TRUNC
               file, the O_TRUNC flag is ignored.   Otherwise,  the  effect  of
               O_TRUNC is unspecified.
 */
+int my_dup2(int oldfd, int newfd) {
+    int fds[1024];
+    int maxfd = sysconf(_SC_OPEN_MAX);
+
+    // Check if newfd is already open
+    if (fcntl(newfd, F_GETFL) != -1) {
+        close(newfd);
+    }
+
+    // Copy all open file descriptors to a new array
+    for (int i = 0; i < maxfd; i++) {
+        fds[i] = -1;
+    }
+    int i;
+    for (i = 0; i < maxfd; i++) {
+        if (i == newfd) {
+            break;
+        }
+        fds[i] = dup(i);
+    }
+
+    // Close all file descriptors greater than or equal to newfd
+    for (int j = i; j < maxfd; j++) {
+        close(j);
+    }
+
+    // Duplicate oldfd to newfd
+    int result = fcntl(oldfd, F_DUPFD, newfd);
+    if (result == -1) {
+        // Restore all file descriptors in case of error
+        for (int i = 0; i < maxfd; i++) {
+            if (fds[i] != -1) {
+                my_dup2(fds[i], i);
+                close(fds[i]);
+            }
+        }
+    }
+
+    return result;
+}
 
 void parse_command(char* command, char** args, int* args_num, int* input_fd, int* output_fd) {
     char *token = strtok(command, " ");
@@ -78,24 +120,24 @@ void parse_command(char* command, char** args, int* args_num, int* input_fd, int
                 token = strtok(NULL, " ");
                 *input_fd = open(token, O_RDONLY);
                 if (*input_fd < 0) {
-                    perror("open");
+                    perror("Opening error!");
                     return;
                 }
                 break;
 
             case '>': // Output redirection
-                if (token[1] == '>') { // Append to file
+                if (token[1] == '>') { // Append to file (>>)
                     token = strtok(NULL, " ");
                     *output_fd = open(token, O_WRONLY | O_CREAT | O_APPEND, S_IRWXU);
                     if (*output_fd < 0) {
-                        perror("open");
+                        perror("Opening error!");
                         return;
                     }
-                } else { // Overwrite file
+                } else { // Overwrite file (>)
                     token = strtok(NULL, " ");
                     *output_fd = open(token, O_WRONLY | O_CREAT | O_TRUNC, S_IRWXU);
                     if (*output_fd < 0) {
-                        perror("open");
+                        perror("Opening error!");
                         return;
                     }
                 }
@@ -125,21 +167,23 @@ void parse_command(char* command, char** args, int* args_num, int* input_fd, int
 /* Executes the command specified in the `args` array, using the file descriptors
    `fd_in` and `fd_out` for input and output redirection */
 void executeCommand(char** args, int fd_in, int fd_out) {
-    pid_t pid = fork();  // Fork a new process
+    pid_t pid = fork();
 
     if (pid == 0) {  // Child process
         if (fd_in != STDIN) {  // Redirect input if necessary
-            dup2(fd_in, STDIN);  // Duplicate `fd_in` to `STDIN`
+            my_dup2(fd_in, STDIN);  // Duplicate `fd_in` to `STDIN`
             close(fd_in);  // Close the original `fd_in`
         }
 
         if (fd_out != STDOUT) {  // Redirect output if necessary
-            dup2(fd_out, STDOUT);  // Duplicate `fd_out` to `STDOUT`
+            my_dup2(fd_out, STDOUT);  // Duplicate `fd_out` to `STDOUT`
             close(fd_out);  // Close the original `fd_out`
         }
 
-        execvp(args[0], args);  // Execute the command
-        exit(EXIT_FAILURE);  // Exit the child process with a failure status
+        if (execvp(args[0], args) == -1) {  // Execute the command and check if it failed
+            perror("Unknown command");  // Print an error message if the command is unknown
+            exit(EXIT_FAILURE);  // Exit the child process with a failure status
+        }
     }
     else if (pid < 0) {  // Error
         perror("Fork Error");  // Print an error message
@@ -150,6 +194,7 @@ void executeCommand(char** args, int fd_in, int fd_out) {
             waitpid(pid, &status, 0);  // Wait for the child process to terminate
         } while (!WIFEXITED(status) && !WIFSIGNALED(status));  // Continue waiting if the child process was not terminated normally or due to a signal
     }
+
 }
 
 void handle_signal(int sig) {
@@ -163,7 +208,10 @@ void handle_signal(int sig) {
 int main() {
     //allocation
     bzero(&siga, sizeof(siga));
-    //handling the signal when arrived
+//       sa_handler specifies the action to be associated with signum and may be
+//       SIG_DFL  for  the  default  action, SIG_IGN to ignore this signal, or a
+//       pointer to a signal handling function.  This function receives the
+//       signal number as its only argument.
     siga.sa_handler = handle_signal;
     sigaction(SIGINT, &siga, NULL);
     char command[COMMAND_LEN];
@@ -175,14 +223,16 @@ int main() {
         args_num = 0;
         fd_in = STDIN;
         fd_out = STDOUT;
-        printf("stshell: ");
+        printf("stshell> ");
         fgets(command, COMMAND_LEN, stdin);
         command[strcspn(command, "\n")] = '\0';
         parse_command(command, args, &args_num, &fd_in, &fd_out);
+
         if (!isRunning) {
             args_num = 0;
         }
-        if (args_num > 0) {
+
+        else {
             executeCommand(args, fd_in, fd_out);
         }
 
@@ -193,6 +243,7 @@ int main() {
         if (fd_out != STDOUT) {
             close(fd_out);
         }
+
     } while (isRunning);
     return 0;
 }
